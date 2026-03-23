@@ -1,3 +1,15 @@
+<div align=center>
+
+<img src="https://github.com/Team-Resurgent/Xbox-Cover-Art-Builder/blob/main/img/team-resurgent.png" width=300> <img src="https://github.com/Team-Resurgent/Xbox-Cover-Art-Builder/blob/main/img/Darkone83.png" width=400>
+
+<p>
+
+<img src="https://github.com/Team-Resurgent/Xbox-Cover-Art-Builder/blob/main/img/App.png">
+
+</p>
+
+</div>
+
 # Xbox Cover Art Builder
 
 **Team Resurgent  |  Darkone83**
