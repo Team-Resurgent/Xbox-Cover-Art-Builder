@@ -66,7 +66,7 @@ pip3 install Pillow PySide6
 Place all of the following files in the **same folder**:
 
 ```
-xbox_cover_gui.py    ← main application
+xbox_cover_gui.pyw    ← main application
 bg.png               ← Only on XBOX frame
 bg2.png              ← Team Resurgent frame
 bg3.png              ← Team Resurgent 2 frame
@@ -78,12 +78,12 @@ bg3.png              ← Team Resurgent 2 frame
 
 ### 4. Launch the application
 
-**Double-click** `xbox_cover_gui.py` — on most systems Python files open directly.
+**Double-click** `xbox_cover_gui.pyw` — on most systems Python files open directly.
 
 Or from the terminal:
 
 ```bash
-python xbox_cover_gui.py
+python xbox_cover_gui.pyw
 ```
 
 ---
@@ -195,7 +195,7 @@ Click **Clear** to remove the loaded artwork, reset zoom, and clear all text box
 ## File Structure
 
 ```
-xbox_cover_gui.py    Main application script
+xbox_cover_gui.pyw    Main application script
 bg.png               Only on XBOX frame  (600 × 900 px)
 bg2.png              Team Resurgent frame (1342 × 2000 px)
 bg3.png              Team Resurgent 2 frame (1342 × 2000 px)
@@ -210,16 +210,16 @@ README.md            This file
 → Run `pip install Pillow PySide6` in your terminal and try again.
 
 **Frame not found error**
-→ Make sure `bg.png`, `bg2.png`, and `bg3.png` are in the same folder as `xbox_cover_gui.py`.
+→ Make sure `bg.png`, `bg2.png`, and `bg3.png` are in the same folder as `xbox_cover_gui.pyw`.
 
 **Text font not rendering correctly**
 → The app searches your system fonts folder for the selected font family. If a font is not found it falls back to a default. Install the font on your system and restart the app.
 
 **App won't open on double-click (Windows)**
-→ Right-click `xbox_cover_gui.py` → Open with → Python. Or open Command Prompt, navigate to the folder, and run `python xbox_cover_gui.py`.
+→ Right-click `xbox_cover_gui.pyw` → Open with → Python. Or open Command Prompt, navigate to the folder, and run `python xbox_cover_gui.pyw`.
 
 **App won't open on macOS**
-→ Open Terminal, navigate to the folder and run `python3 xbox_cover_gui.py`.
+→ Open Terminal, navigate to the folder and run `python3 xbox_cover_gui.pyw`.
 
 ---
 
@@ -227,4 +227,4 @@ README.md            This file
 
 Developed by **Team Resurgent** and **Darkone83**
 
-Built with [Python](https://www.python.org/), [Pillow](https://python-pillow.org/), and [PySide6](https://doc.qt.io/qtforpython/)
+Built with [Python](https://www.pywthon.org/), [Pillow](https://python-pillow.org/), and [PySide6](https://doc.qt.io/qtforpython/)
