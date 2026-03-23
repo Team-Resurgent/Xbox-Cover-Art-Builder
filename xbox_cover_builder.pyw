@@ -154,8 +154,13 @@ def find_font(family, bold=False, italic=False, size_px=48):
 
 # ── Image helpers ─────────────────────────────────────────────────────────────
 def auto_fit(art_w, art_h, slot_w, slot_h):
-    scale = max(slot_w / art_w, slot_h / art_h)
-    return math.ceil(scale * 100 + 1) / 100
+    # Image larger than slot in either dimension → contain (shrink to show whole image)
+    # Image smaller than slot in both dimensions → cover (zoom up to fill slot)
+    if art_w > slot_w or art_h > slot_h:
+        scale = min(slot_w / art_w, slot_h / art_h)   # contain
+    else:
+        scale = max(slot_w / art_w, slot_h / art_h)   # cover
+    return round(scale, 4)
 
 
 def render_slot(art, zoom, off_x, off_y, slot_w, slot_h):
@@ -677,6 +682,13 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Xbox Cover Art Builder — Team Resurgent")
         self.setStyleSheet(f"QMainWindow{{background:{C_BG};}}")
+        # Fixed frame: no min/max buttons, no resize grip
+        self.setWindowFlags(
+            Qt.WindowType.Window |
+            Qt.WindowType.WindowTitleHint |
+            Qt.WindowType.WindowCloseButtonHint |
+            Qt.WindowType.CustomizeWindowHint
+        )
 
         self.art_img       = None
         self.result_img    = None
@@ -939,7 +951,9 @@ class MainWindow(QMainWindow):
         dw               = int(fw * self._disp_scale)
         self.preview.setFixedSize(dw, DISP_H)
         self.preview.set_disp_scale(self._disp_scale)
-        self.setFixedWidth(dw + 215 + 12*3)
+        # Lock window to exact content size — no resize in either axis
+        total_w = dw + 215 + 12*3
+        self.setFixedSize(total_w, DISP_H + 40 + 24)  # preview + header + status
         self._update_info()
         if self.art_img: self._reset_fit()
         else: self._redraw()
@@ -976,8 +990,8 @@ class MainWindow(QMainWindow):
     # ── Zoom / pan ────────────────────────────────────────────────────────────
     def _reset_fit(self):
         if self.art_img is None: return
-        ix,iy,iw,ih = FRAMES[self._frame_label]["inner_slot"]
-        self.zoom  = auto_fit(self.art_img.width, self.art_img.height, iw, ih)
+        ax, ay, aw, ah = FRAMES[self._frame_label]["art_box"]
+        self.zoom  = auto_fit(self.art_img.width, self.art_img.height, aw, ah)
         self.off_x = (self.art_img.width  * self.zoom) / 2
         self.off_y = (self.art_img.height * self.zoom) / 2
         self._sync_zoom_ui(); self._redraw()
