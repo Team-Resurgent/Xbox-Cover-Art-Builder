@@ -989,25 +989,24 @@ class MainWindow(QMainWindow):
 
     def _zoom_by(self, steps):
         if self.art_img is None: return
-        self._apply_zoom_pct(max(10, min(400, int(self.zoom*100)+steps)))
+        self._apply_zoom_pct(max(10, min(400, round(self.zoom*100) + steps)))
 
     def _on_slider_changed(self, val):
         if self.art_img is None: return
         self._apply_zoom_pct(val)
 
     def _apply_zoom_pct(self, pct):
-        nz = pct/100.0
+        nz = round(pct / 100.0, 2)
         if self.zoom > 0 and self.art_img:
-            r = nz/self.zoom; self.off_x *= r; self.off_y *= r
+            r = nz / self.zoom; self.off_x *= r; self.off_y *= r
         self.zoom = nz; self._sync_zoom_ui(); self._redraw()
 
     def _sync_zoom_ui(self):
-        pct = max(10,min(400,int(self.zoom*100)))
+        pct = max(10, min(400, round(self.zoom * 100)))
         self.zoom_lbl.setText(f"{pct}%")
         self.zoom_slider.blockSignals(True); self.zoom_slider.setValue(pct); self.zoom_slider.blockSignals(False)
 
     def _wheel_event(self, e): self._zoom_by(3 if e.angleDelta().y()>0 else -3)
-    def wheelEvent(self, e):   self._zoom_by(3 if e.angleDelta().y()>0 else -3)
     def _on_pan(self, dx, dy): self.off_x += dx; self.off_y += dy; self._redraw()
     def _nudge(self, dx, dy):
         if self.art_img is None: return
