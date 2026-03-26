@@ -1,32 +1,75 @@
 #!/usr/bin/env python3
 """
 Xbox Cover Art Builder — Team Resurgent / Darkone83
-pip install Pillow PySide6
+Dependencies are installed automatically on first run.
 """
 
-import os, sys, math, uuid, platform
+import os, sys, subprocess
 from pathlib import Path
 
-try:
-    from PIL import Image, ImageDraw, ImageFont
-except ImportError:
-    sys.exit("ERROR: pip install Pillow")
+# ── Dependency bootstrapper ───────────────────────────────────────────────────
+# Runs before anything else. Installs missing packages via pip, then re-launches
+# the script so all imports resolve cleanly in a fresh process.
 
-try:
-    from PySide6.QtWidgets import (
-        QApplication, QMainWindow, QWidget, QLabel, QPushButton,
-        QSlider, QComboBox, QFileDialog, QMessageBox,
-        QHBoxLayout, QVBoxLayout, QGridLayout, QFrame, QScrollArea,
-        QSpinBox, QDoubleSpinBox, QFontComboBox,
-        QDialog, QDialogButtonBox, QTextEdit, QColorDialog
-    )
-    from PySide6.QtCore import Qt, QPointF
-    from PySide6.QtGui  import (
-        QPixmap, QImage, QColor, QFont, QCursor,
-        QDragEnterEvent, QDropEvent, QLinearGradient, QPainter
-    )
-except ImportError:
-    sys.exit("ERROR: pip install PySide6")
+_REQUIRED = [("PIL", "Pillow"), ("PySide6", "PySide6")]
+
+def _alert(title, msg):
+    """Show a GUI alert using tkinter (stdlib) — works even with no Qt/Pillow."""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk(); root.withdraw()
+        messagebox.showerror(title, msg)
+        root.destroy()
+    except Exception:
+        print(f"{title}: {msg}", file=sys.stderr)
+
+def _bootstrap():
+    missing = []
+    for import_name, pkg_name in _REQUIRED:
+        try:
+            __import__(import_name)
+        except ImportError:
+            missing.append(pkg_name)
+
+    if not missing:
+        return  # all good
+
+    # Try to install
+    pip = [sys.executable, "-m", "pip", "install", "--upgrade"] + missing
+    try:
+        result = subprocess.run(pip, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "pip failed")
+    except Exception as ex:
+        _alert("Dependency Install Failed",
+               f"Could not install: {', '.join(missing)}\n\n{ex}\n\n"
+               f"Please run manually:\n  pip install {' '.join(missing)}")
+        sys.exit(1)
+
+    # Re-launch with a clean process so the new packages are importable
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+_bootstrap()
+
+# ── Imports (guaranteed present after bootstrap) ──────────────────────────────
+import math, uuid, platform, json, shutil
+
+from PIL import Image, ImageDraw, ImageFont
+
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QLabel, QPushButton,
+    QSlider, QComboBox, QFileDialog, QMessageBox,
+    QHBoxLayout, QVBoxLayout, QGridLayout, QFrame, QScrollArea,
+    QSpinBox, QDoubleSpinBox, QFontComboBox, QMenuBar, QMenu,
+    QDialog, QDialogButtonBox, QTextEdit, QColorDialog,
+    QLineEdit, QCheckBox, QRubberBand, QSizePolicy
+)
+from PySide6.QtCore import Qt, QPointF, QRect, QSize, Signal
+from PySide6.QtGui  import (
+    QPixmap, QImage, QColor, QFont, QCursor, QAction,
+    QDragEnterEvent, QDropEvent, QLinearGradient, QPainter, QPen
+)
 
 
 # ── Frame profiles ────────────────────────────────────────────────────────────
@@ -37,6 +80,7 @@ FRAMES = {
         "inner_slot": (0, 120, 600, 780),
         "frame_wh":   (600, 900),
         "sep_y":      119,
+        "behind":     True,
     },
     "Team Resurgent": {
         "file":       "bg2.png",
@@ -44,6 +88,7 @@ FRAMES = {
         "inner_slot": (0, 0, 1350, 2210),
         "frame_wh":   (1342, 2000),
         "sep_y":      None,
+        "behind":     True,
     },
     "Team Resurgent 2": {
         "file":       "bg3.png",
@@ -56,6 +101,7 @@ FRAMES = {
 }
 
 DISP_H    = 660
+UI_SCALE  = 1.0   # set to 1.5 on macOS Retina in main()
 SUPPORTED = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff", ".gif"}
 
 FONT_MONO  = "Courier New"
@@ -179,10 +225,16 @@ def render_slot(art, zoom, off_x, off_y, slot_w, slot_h):
 def composite(frame_img, art_img, zoom, off_x, off_y, art_box, behind=False):
     ax, ay, aw, ah = art_box
     fw, fh = frame_img.size
-    out  = Image.new("RGBA", (fw, fh), (0,0,0,255))
     slot = render_slot(art_img.convert("RGBA"), zoom, off_x, off_y, aw, ah)
-    out.paste(slot, (ax, ay))
-    out  = Image.alpha_composite(out, frame_img.convert("RGBA"))
+    if behind:
+        # Art behind frame: paste art first, alpha-composite frame on top
+        out = Image.new("RGBA", (fw, fh), (0,0,0,255))
+        out.paste(slot, (ax, ay))
+        out = Image.alpha_composite(out, frame_img.convert("RGBA"))
+    else:
+        # Art on top of frame: start with frame, paste art over it
+        out = frame_img.convert("RGBA").copy()
+        out.paste(slot, (ax, ay), slot)
     return out
 
 
@@ -279,25 +331,25 @@ class ColorPickerDialog(QDialog):
             btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             btn.clicked.connect(lambda checked, c=hex_c: self._set_hex(c))
             g_layout.addWidget(btn, i // 10, i % 10)
-        layout.addWidget(QLabel("PRESETS:", styleSheet=f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:8pt;font-weight:bold;"))
+        layout.addWidget(QLabel("PRESETS:", styleSheet=f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:{sc(8)}pt;font-weight:bold;"))
         layout.addWidget(grid)
 
         # Full color wheel button
         btn_full = QPushButton("Open Full Color Wheel...")
-        btn_full.setStyleSheet(f"background:{C_BTN};color:#ccc;font-family:'{FONT_MONO}';font-size:9pt;border:none;padding:6px;")
+        btn_full.setStyleSheet(f"background:{C_BTN};color:#ccc;font-family:'{FONT_MONO}';font-size:{sc(9)}pt;border:none;padding:{sc(6)}px;")
         btn_full.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         btn_full.clicked.connect(self._open_wheel)
         layout.addWidget(btn_full)
 
         # Hex input
         hex_row = QWidget(); hex_row.setStyleSheet("background:transparent;")
-        hex_h = QHBoxLayout(hex_row); hex_h.setContentsMargins(0,0,0,0); hex_h.setSpacing(6)
+        hex_h = QHBoxLayout(hex_row); hex_h.setContentsMargins(0,0,0,0); hex_h.setSpacing(sc(6))
         from PySide6.QtWidgets import QLineEdit
         self.hex_input = QLineEdit(initial.name().upper())
         self.hex_input.setMaxLength(7)
-        self.hex_input.setStyleSheet(f"background:#1a1a1a;color:#fff;border:1px solid #333;padding:4px;font-family:'{FONT_MONO}';font-size:10pt;")
+        self.hex_input.setStyleSheet(f"background:#1a1a1a;color:#fff;border:1px solid #333;padding:{sc(4)}px;font-family:'{FONT_MONO}';font-size:{sc(10)}pt;")
         self.hex_input.textChanged.connect(self._on_hex_changed)
-        hex_h.addWidget(QLabel("HEX:", styleSheet=f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:8pt;font-weight:bold;min-width:40px;"))
+        hex_h.addWidget(QLabel("HEX:", styleSheet=f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:{sc(8)}pt;font-weight:bold;min-width:{sc(40)}px;"))
         hex_h.addWidget(self.hex_input)
 
         # Preview swatch
@@ -308,7 +360,7 @@ class ColorPickerDialog(QDialog):
         layout.addWidget(hex_row)
 
         # RGB sliders
-        layout.addWidget(QLabel("RGB:", styleSheet=f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:8pt;font-weight:bold;"))
+        layout.addWidget(QLabel("RGB:", styleSheet=f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:{sc(8)}pt;font-weight:bold;"))
         self.r_slider = self._make_rgb_slider("R", initial.red(),   "#ff4444")
         self.g_slider = self._make_rgb_slider("G", initial.green(), "#44ff44")
         self.b_slider = self._make_rgb_slider("B", initial.blue(),  "#4488ff")
@@ -318,21 +370,22 @@ class ColorPickerDialog(QDialog):
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
                                 QDialogButtonBox.StandardButton.Cancel)
-        btns.setStyleSheet(f"QPushButton{{background:{C_BTN};color:#ccc;font-family:'{FONT_MONO}';font-size:9pt;border:none;padding:6px 20px;}} QPushButton:hover{{background:{C_BTN_HOV};color:#fff;}}")
+        btns.setStyleSheet(f"QPushButton{{background:{C_BTN};color:#ccc;font-family:'{FONT_MONO}';font-size:{sc(9)}pt;border:none;padding:{sc(6)}px {sc(20)}px;}} QPushButton:hover{{background:{C_BTN_HOV};color:#fff;}}")
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
 
     def _make_rgb_slider(self, label, value, color):
         row = QWidget(); row.setStyleSheet("background:transparent;")
-        h = QHBoxLayout(row); h.setContentsMargins(0,0,0,0); h.setSpacing(6)
+        h = QHBoxLayout(row); h.setContentsMargins(0,0,0,0); h.setSpacing(sc(6))
         lbl = QLabel(label)
-        lbl.setStyleSheet(f"color:{color};font-family:'{FONT_MONO}';font-size:9pt;font-weight:bold;min-width:16px;")
+        lbl.setStyleSheet(f"color:{color};font-family:'{FONT_MONO}';font-size:{sc(9)}pt;font-weight:bold;min-width:{sc(16)}px;")
         slider = QSlider(Qt.Orientation.Horizontal)
         slider.setRange(0, 255); slider.setValue(value)
-        slider.setStyleSheet(f"QSlider::groove:horizontal{{background:#1a1a1a;height:4px;border-radius:2px;}} QSlider::handle:horizontal{{background:{color};width:14px;height:14px;margin:-5px 0;border-radius:7px;}} QSlider::sub-page:horizontal{{background:{color};border-radius:2px;}}")
+        sh = sc(14)
+        slider.setStyleSheet(f"QSlider::groove:horizontal{{background:#1a1a1a;height:{sc(4)}px;border-radius:2px;}} QSlider::handle:horizontal{{background:{color};width:{sh}px;height:{sh}px;margin:{-sh//2+1}px 0;border-radius:{sh//2}px;}} QSlider::sub-page:horizontal{{background:{color};border-radius:2px;}}")
         val_lbl = QLabel(str(value))
-        val_lbl.setStyleSheet(f"color:#aaa;font-family:'{FONT_MONO}';font-size:8pt;min-width:28px;")
+        val_lbl.setStyleSheet(f"color:#aaa;font-family:'{FONT_MONO}';font-size:{sc(8)}pt;min-width:{sc(28)}px;")
         slider.valueChanged.connect(lambda v: (val_lbl.setText(str(v)), self._on_rgb_changed()))
         h.addWidget(lbl); h.addWidget(slider); h.addWidget(val_lbl)
         return row, slider
@@ -380,32 +433,30 @@ class TextBoxDialog(QDialog):
         self.tb = tb
         self.setWindowTitle("Text Overlay")
         self.setStyleSheet(f"background:{C_BG};color:#ccc;")
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(sc(420))
 
-        L = QVBoxLayout(self); L.setSpacing(8)
+        L = QVBoxLayout(self); L.setSpacing(sc(8))
 
         def row(lbl_txt, widget, lbl_w=100):
             r = QWidget(); r.setStyleSheet("background:transparent;")
-            h = QHBoxLayout(r); h.setContentsMargins(0,0,0,0); h.setSpacing(8)
+            h = QHBoxLayout(r); h.setContentsMargins(0,0,0,0); h.setSpacing(sc(8))
             l = QLabel(lbl_txt)
-            l.setStyleSheet(f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:8pt;font-weight:bold;min-width:{lbl_w}px;")
+            l.setStyleSheet(f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:{sc(8)}pt;font-weight:bold;min-width:{sc(lbl_w)}px;")
             h.addWidget(l); h.addWidget(widget,1)
             return r
 
-        spin_ss = f"background:#1a1a1a;color:#fff;border:1px solid #333;padding:3px;font-family:'{FONT_MONO}';"
-
         # Text
-        L.addWidget(QLabel("TEXT:", styleSheet=f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:8pt;font-weight:bold;"))
+        L.addWidget(QLabel("TEXT:", styleSheet=f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:{sc(8)}pt;font-weight:bold;"))
         self.txt_edit = QTextEdit()
         self.txt_edit.setPlainText(tb.text)
-        self.txt_edit.setStyleSheet(f"background:#1a1a1a;color:#fff;font-size:11pt;border:1px solid #333;")
-        self.txt_edit.setMaximumHeight(70)
+        self.txt_edit.setStyleSheet(f"background:#1a1a1a;color:#fff;font-size:{sc(11)}pt;border:1px solid #333;")
+        self.txt_edit.setMaximumHeight(sc(70))
         L.addWidget(self.txt_edit)
 
         # Font
         self.font_combo = QFontComboBox()
         self.font_combo.setCurrentFont(QFont(tb.font_family))
-        self.font_combo.setStyleSheet(f"background:#1a1a1a;color:#fff;border:1px solid #333;padding:3px;")
+        self.font_combo.setStyleSheet(f"background:#1a1a1a;color:#fff;border:1px solid #333;padding:{sc(3)}px;")
         L.addWidget(row("FONT:", self.font_combo))
 
         # Size (pt) — dropdown of traditional sizes
@@ -413,25 +464,25 @@ class TextBoxDialog(QDialog):
         self.size_combo.addItems([str(s) for s in PT_SIZES])
         closest = min(PT_SIZES, key=lambda s: abs(s - tb.font_pt))
         self.size_combo.setCurrentText(str(closest))
-        self.size_combo.setStyleSheet(f"background:#1a1a1a;color:#fff;border:1px solid #333;padding:3px;")
+        self.size_combo.setStyleSheet(f"background:#1a1a1a;color:#fff;border:1px solid #333;padding:{sc(3)}px;")
         L.addWidget(row("SIZE (pt):", self.size_combo))
 
         # Scale & Rotate info note
         hint = QLabel("Scale & rotate: drag handles on canvas in Text Move mode\n"
                        "  Green square = resize   |   Magenta circle = rotate")
-        hint.setStyleSheet(f"color:#555;font-family:'{FONT_MONO}';font-size:8pt;background:transparent;")
+        hint.setStyleSheet(f"color:#555;font-family:'{FONT_MONO}';font-size:{sc(8)}pt;background:transparent;")
         hint.setWordWrap(True)
         L.addWidget(hint)
 
         # Bold / Italic
         style_w = QWidget(); style_w.setStyleSheet("background:transparent;")
-        style_h = QHBoxLayout(style_w); style_h.setContentsMargins(0,0,0,0); style_h.setSpacing(6)
+        style_h = QHBoxLayout(style_w); style_h.setContentsMargins(0,0,0,0); style_h.setSpacing(sc(6))
         self.bold_btn   = QPushButton("Bold")
         self.italic_btn = QPushButton("Italic")
         for btn, active in [(self.bold_btn, tb.bold), (self.italic_btn, tb.italic)]:
             btn.setCheckable(True); btn.setChecked(active)
             btn.setStyleSheet(f"""
-                QPushButton{{background:#1c1c1c;color:#ccc;font-family:'{FONT_MONO}';font-size:9pt;font-weight:bold;border:none;padding:6px 18px;}}
+                QPushButton{{background:#1c1c1c;color:#ccc;font-family:'{FONT_MONO}';font-size:{sc(9)}pt;font-weight:bold;border:none;padding:{sc(6)}px {sc(18)}px;}}
                 QPushButton:checked{{background:{C_GREEN};color:#000;}}
                 QPushButton:hover{{background:#2a2a2a;}}
             """)
@@ -442,7 +493,7 @@ class TextBoxDialog(QDialog):
         # Color
         self._color = QColor(*tb.color)
         self.color_btn = QPushButton()
-        self.color_btn.setFixedHeight(34)
+        self.color_btn.setFixedHeight(sc(34))
         self._refresh_color_btn()
         self.color_btn.clicked.connect(self._pick_color)
         self.color_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
@@ -450,7 +501,7 @@ class TextBoxDialog(QDialog):
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
                                 QDialogButtonBox.StandardButton.Cancel)
-        btns.setStyleSheet(f"QPushButton{{background:{C_BTN};color:#ccc;font-family:'{FONT_MONO}';font-size:9pt;border:none;padding:6px 20px;}} QPushButton:hover{{background:{C_BTN_HOV};color:#fff;}}")
+        btns.setStyleSheet(f"QPushButton{{background:{C_BTN};color:#ccc;font-family:'{FONT_MONO}';font-size:{sc(9)}pt;border:none;padding:{sc(6)}px {sc(20)}px;}} QPushButton:hover{{background:{C_BTN_HOV};color:#fff;}}")
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         L.addWidget(btns)
@@ -459,8 +510,8 @@ class TextBoxDialog(QDialog):
         light = self._color.lightness() > 128
         self.color_btn.setStyleSheet(
             f"background:{self._color.name()};color:{'#000' if light else '#fff'};"
-            f"font-family:'{FONT_MONO}';font-size:10pt;font-weight:bold;"
-            f"border:1px solid #555;padding:4px;")
+            f"font-family:'{FONT_MONO}';font-size:{sc(10)}pt;font-weight:bold;"
+            f"border:1px solid #555;padding:{sc(4)}px;")
         self.color_btn.setText(self._color.name().upper())
 
     def _pick_color(self):
@@ -481,17 +532,22 @@ class TextBoxDialog(QDialog):
 
 
 # ── Widget helpers ────────────────────────────────────────────────────────────
+def sc(n):
+    """Scale a pixel/pt value by UI_SCALE."""
+    return int(round(n * UI_SCALE))
+
 def make_label(text, color=C_DIM, bold=False, size=9):
     lbl = QLabel(text)
-    lbl.setStyleSheet(f"color:{color};font-family:'{FONT_MONO}';font-size:{size}pt;"
+    lbl.setStyleSheet(f"color:{color};font-family:'{FONT_MONO}';font-size:{sc(size)}pt;"
                       f"font-weight:{'bold' if bold else 'normal'};background:transparent;")
     return lbl
 
 def make_button(text, color=C_BTN, fg="#ccc", hover=C_BTN_HOV):
+    pad_v = sc(7); pad_h = sc(10); fsize = sc(9)
     btn = QPushButton(text)
     btn.setStyleSheet(f"""
-        QPushButton{{background:{color};color:{fg};font-family:'{FONT_MONO}';font-size:9pt;
-            font-weight:bold;border:none;padding:7px 10px;}}
+        QPushButton{{background:{color};color:{fg};font-family:'{FONT_MONO}';font-size:{fsize}pt;
+            font-weight:bold;border:none;padding:{pad_v}px {pad_h}px;}}
         QPushButton:hover{{background:{hover};color:#fff;}}
         QPushButton:pressed{{background:#111;}}
     """)
@@ -500,7 +556,7 @@ def make_button(text, color=C_BTN, fg="#ccc", hover=C_BTN_HOV):
 
 def section_label(text, color=C_GREEN):
     lbl = QLabel(text)
-    lbl.setStyleSheet(f"color:{color};font-family:'{FONT_MONO}';font-size:8pt;font-weight:bold;background:transparent;")
+    lbl.setStyleSheet(f"color:{color};font-family:'{FONT_MONO}';font-size:{sc(8)}pt;font-weight:bold;background:transparent;")
     return lbl
 
 
@@ -508,7 +564,6 @@ def section_label(text, color=C_GREEN):
 HANDLE_R = 8   # handle radius in display pixels
 
 class PreviewLabel(QLabel):
-    from PySide6.QtCore import Signal
     file_dropped   = Signal(str)
     pan_delta      = Signal(float, float)
     text_moved     = Signal(str, float, float)      # id, cx, cy
@@ -676,6 +731,225 @@ class PreviewLabel(QLabel):
     def wheelEvent(self, e): e.ignore()
 
 
+# ── Theme Creator Dialog ──────────────────────────────────────────────────────
+THEME_CANVAS_H = 480   # fixed display height for the frame preview in the dialog
+
+class ArtBoxCanvas(QWidget):
+    rect_changed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background:#111;")
+        self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+        self.setMouseTracking(True)
+        self._pixmap     = None
+        self._disp_scale = 1.0
+        self._rect       = None
+        self._dragging   = False
+        self._origin     = None
+
+    def load_image(self, img: Image.Image):
+        th = int(THEME_CANVAS_H * UI_SCALE)
+        self._disp_scale = th / img.height
+        dw = int(img.width * self._disp_scale)
+        self.setFixedSize(dw, th)
+        self._pixmap = pil_to_qpixmap(img.resize((dw, th), Image.LANCZOS))
+        self._rect   = None
+        self.update()
+
+    def get_art_box(self):
+        if self._rect is None: return None
+        r = self._rect.normalized()
+        if r.width() < 4 or r.height() < 4: return None
+        s = self._disp_scale
+        return (int(r.x()/s), int(r.y()/s), int(r.width()/s), int(r.height()/s))
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._origin   = e.position().toPoint()
+            self._rect     = QRect(self._origin, self._origin)
+            self._dragging = True
+            self.update()
+
+    def mouseMoveEvent(self, e):
+        if self._dragging:
+            self._rect = QRect(self._origin, e.position().toPoint())
+            self.update()
+            self.rect_changed.emit()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            self.rect_changed.emit()
+            self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        # Background / image
+        if self._pixmap:
+            p.drawPixmap(0, 0, self._pixmap)
+        else:
+            p.fillRect(self.rect(), QColor("#111"))
+        # Selection rect
+        if self._rect:
+            r = self._rect.normalized()
+            # Dim overlay outside rect
+            p.fillRect(0, 0, self.width(), r.top(),                            QColor(0,0,0,120))
+            p.fillRect(0, r.bottom(), self.width(), self.height()-r.bottom(),  QColor(0,0,0,120))
+            p.fillRect(0, r.top(), r.left(), r.height(),                       QColor(0,0,0,120))
+            p.fillRect(r.right(), r.top(), self.width()-r.right(), r.height(), QColor(0,0,0,120))
+            # Green border
+            p.setPen(QPen(QColor("#5dbb00"), 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRect(r)
+            # Coords
+            ab = self.get_art_box()
+            if ab:
+                p.setPen(QColor("#5dbb00"))
+                p.setFont(QFont(FONT_MONO, sc(7)))
+                p.drawText(r.left()+4, r.top()+sc(14),
+                           f"{ab[0]},{ab[1]}  {ab[2]}×{ab[3]}")
+        p.end()
+
+
+class CreateThemeDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Create Theme")
+        self.setStyleSheet(f"background:{C_BG};color:#ccc;")
+        self.setMinimumWidth(sc(560))
+
+        self._img      = None   # PIL Image (full res)
+        self._img_path = ""
+
+        L = QVBoxLayout(self); L.setSpacing(sc(8)); L.setContentsMargins(sc(12),sc(12),sc(12),sc(12))
+
+        # ── Name ──
+        name_row = QWidget(); name_row.setStyleSheet("background:transparent;")
+        nh = QHBoxLayout(name_row); nh.setContentsMargins(0,0,0,0); nh.setSpacing(sc(8))
+        nh.addWidget(QLabel("THEME NAME:", styleSheet=f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:{sc(8)}pt;font-weight:bold;min-width:{sc(110)}px;"))
+        self.name_edit = QLineEdit("My Theme")
+        self.name_edit.setStyleSheet(f"background:#1a1a1a;color:#fff;border:1px solid #333;padding:{sc(4)}px;font-family:'{FONT_MONO}';font-size:{sc(9)}pt;")
+        nh.addWidget(self.name_edit, 1)
+        L.addWidget(name_row)
+
+        # ── Image upload ──
+        img_row = QWidget(); img_row.setStyleSheet("background:transparent;")
+        ih = QHBoxLayout(img_row); ih.setContentsMargins(0,0,0,0); ih.setSpacing(sc(8))
+        self.img_lbl = QLabel("No frame image loaded")
+        self.img_lbl.setStyleSheet(f"color:{C_DIM};font-family:'{FONT_MONO}';font-size:{sc(8)}pt;")
+        btn_img = make_button("Browse Frame Image…")
+        btn_img.clicked.connect(self._browse_image)
+        ih.addWidget(self.img_lbl, 1); ih.addWidget(btn_img)
+        L.addWidget(img_row)
+
+        # ── Canvas ──
+        L.addWidget(QLabel("DRAG TO DEFINE ART BOX  (the region where cover art is composited):",
+            styleSheet=f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:{sc(8)}pt;font-weight:bold;"))
+        self.canvas = ArtBoxCanvas()
+        scroll = QScrollArea(); scroll.setWidget(self.canvas)
+        scroll.setWidgetResizable(False)
+        scroll.setFixedHeight(int(THEME_CANVAS_H * UI_SCALE) + sc(4))
+        scroll.setStyleSheet("QScrollArea{background:#111;border:1px solid #222;} QScrollBar:horizontal{background:#1a1a1a;height:8px;} QScrollBar::handle:horizontal{background:#333;border-radius:4px;}")
+        L.addWidget(scroll)
+
+        # ── Art box readout ──
+        self.box_lbl = QLabel("Art box: not defined")
+        self.box_lbl.setStyleSheet(f"color:{C_DIM};font-family:'{FONT_MONO}';font-size:{sc(8)}pt;")
+        L.addWidget(self.box_lbl)
+        self.canvas.rect_changed.connect(self._update_box_lbl)
+
+        # ── Options ──
+        opt_row = QWidget(); opt_row.setStyleSheet("background:transparent;")
+        oh = QHBoxLayout(opt_row); oh.setContentsMargins(0,0,0,0); oh.setSpacing(sc(16))
+
+        # sep_y
+        sep_w = QWidget(); sep_w.setStyleSheet("background:transparent;")
+        sh2 = QHBoxLayout(sep_w); sh2.setContentsMargins(0,0,0,0); sh2.setSpacing(sc(6))
+        sh2.addWidget(QLabel("SEP LINE Y:", styleSheet=f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:{sc(8)}pt;font-weight:bold;"))
+        self.sep_spin = QSpinBox(); self.sep_spin.setRange(-1, 9999); self.sep_spin.setValue(-1)
+        self.sep_spin.setSpecialValueText("None")
+        self.sep_spin.setStyleSheet(f"background:#1a1a1a;color:#fff;border:1px solid #333;padding:{sc(3)}px;font-family:'{FONT_MONO}';font-size:{sc(9)}pt;")
+        sh2.addWidget(self.sep_spin)
+        oh.addWidget(sep_w)
+        oh.addStretch()
+        L.addWidget(opt_row)
+
+        # ── Buttons ──
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Save |
+                                QDialogButtonBox.StandardButton.Cancel)
+        btns.setStyleSheet(f"QPushButton{{background:{C_BTN};color:#ccc;font-family:'{FONT_MONO}';font-size:{sc(9)}pt;border:none;padding:{sc(6)}px {sc(20)}px;}} QPushButton:hover{{background:{C_BTN_HOV};color:#fff;}}")
+        btns.accepted.connect(self._save)
+        btns.rejected.connect(self.reject)
+        L.addWidget(btns)
+
+    def _browse_image(self):
+        p, _ = QFileDialog.getOpenFileName(self, "Select Frame Image", "",
+            "Images (*.jpg *.jpeg *.png *.bmp *.webp);;All files (*.*)")
+        if not p: return
+        try:
+            img = Image.open(p).convert("RGBA")
+        except Exception as ex:
+            QMessageBox.critical(self, "Error", str(ex)); return
+        self._img      = img
+        self._img_path = p
+        self.img_lbl.setText(f"{Path(p).name}  ({img.width} × {img.height} px)")
+        self.img_lbl.setStyleSheet(f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:{sc(8)}pt;")
+        self.canvas.load_image(img)
+        self._update_box_lbl()
+
+    def _update_box_lbl(self):
+        ab = self.canvas.get_art_box()
+        if ab:
+            self.box_lbl.setText(f"Art box: x={ab[0]}  y={ab[1]}  w={ab[2]}  h={ab[3]}")
+            self.box_lbl.setStyleSheet(f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:{sc(8)}pt;")
+        else:
+            self.box_lbl.setText("Art box: not defined")
+            self.box_lbl.setStyleSheet(f"color:{C_DIM};font-family:'{FONT_MONO}';font-size:{sc(8)}pt;")
+
+    def _save(self):
+        name = self.name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Missing name", "Please enter a theme name."); return
+        if self._img is None:
+            QMessageBox.warning(self, "No image", "Please load a frame image."); return
+        ab = self.canvas.get_art_box()
+        if ab is None:
+            QMessageBox.warning(self, "No art box", "Please drag to define the art box region."); return
+
+        out_dir, _ = QFileDialog.getSaveFileName(self, "Save Theme JSON", f"{name}.json",
+            "Theme JSON (*.json)")
+        if not out_dir: return
+
+        out_path  = Path(out_dir)
+        img_dest  = out_path.parent / Path(self._img_path).name
+        # Copy image alongside JSON (skip if same file)
+        if Path(self._img_path).resolve() != img_dest.resolve():
+            shutil.copy2(self._img_path, img_dest)
+
+        ax, ay, aw, ah = ab
+        iw, ih = self._img.size
+        sep = self.sep_spin.value() if self.sep_spin.value() >= 0 else None
+        theme = {
+            "name":       name,
+            "file":       img_dest.name,
+            "art_box":    [ax, ay, aw, ah],
+            "inner_slot": [ax, ay, aw, ah],   # default same as art_box; user can edit JSON
+            "frame_wh":   [iw, ih],
+            "sep_y":      sep,
+            "behind":     False,
+        }
+        try:
+            with open(out_path, "w") as f:
+                json.dump(theme, f, indent=2)
+        except Exception as ex:
+            QMessageBox.critical(self, "Save error", str(ex)); return
+
+        QMessageBox.information(self, "Theme saved",
+            f"Theme '{name}' saved to:\n{out_path}\n\nImage copied to:\n{img_dest}")
+        self.accept()
+
+
 # ── Main window ───────────────────────────────────────────────────────────────
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -713,19 +987,40 @@ class MainWindow(QMainWindow):
         main_v = QVBoxLayout(root)
         main_v.setContentsMargins(0,0,0,0); main_v.setSpacing(0)
 
+        # ── Menu bar ──
+        menubar = QMenuBar(self)
+        menubar.setStyleSheet(f"""
+            QMenuBar{{background:{C_HDR};color:#aaa;font-family:'{FONT_MONO}';font-size:{sc(9)}pt;padding:{sc(2)}px {sc(6)}px;}}
+            QMenuBar::item{{background:transparent;padding:{sc(4)}px {sc(10)}px;}}
+            QMenuBar::item:selected{{background:{C_BTN};color:#fff;}}
+            QMenu{{background:{C_BTN};color:#ccc;font-family:'{FONT_MONO}';font-size:{sc(9)}pt;border:1px solid #333;}}
+            QMenu::item{{padding:{sc(6)}px {sc(20)}px;}}
+            QMenu::item:selected{{background:{C_GREEN};color:#000;}}
+            QMenu::separator{{height:1px;background:#333;margin:{sc(3)}px 0;}}
+        """)
+        theme_menu = menubar.addMenu("Themes")
+        act_create = QAction("Create Theme…", self)
+        act_create.triggered.connect(self._create_theme)
+        act_load   = QAction("Load Theme…",   self)
+        act_load.triggered.connect(self._load_theme)
+        theme_menu.addAction(act_create)
+        theme_menu.addSeparator()
+        theme_menu.addAction(act_load)
+        self.setMenuBar(menubar)
+
         # Header
-        hdr = QWidget(); hdr.setFixedHeight(40); hdr.setStyleSheet(f"background:{C_HDR};")
-        hdr_h = QHBoxLayout(hdr); hdr_h.setContentsMargins(14,0,14,0)
+        hdr = QWidget(); hdr.setFixedHeight(sc(40)); hdr.setStyleSheet(f"background:{C_HDR};")
+        hdr_h = QHBoxLayout(hdr); hdr_h.setContentsMargins(sc(14),0,sc(14),0)
         title = QLabel("XBOX COVER ART BUILDER")
-        title.setStyleSheet(f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:12pt;font-weight:bold;")
+        title.setStyleSheet(f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:{sc(12)}pt;font-weight:bold;")
 
         # Coloured branding
         tr = QLabel("Team Resurgent")
-        tr.setStyleSheet(f"color:{C_MAGENTA};font-family:'{FONT_MONO}';font-size:8pt;font-weight:bold;")
+        tr.setStyleSheet(f"color:{C_MAGENTA};font-family:'{FONT_MONO}';font-size:{sc(8)}pt;font-weight:bold;")
         sep = QLabel("  |  ")
-        sep.setStyleSheet(f"color:#333;font-family:'{FONT_MONO}';font-size:8pt;")
+        sep.setStyleSheet(f"color:#333;font-family:'{FONT_MONO}';font-size:{sc(8)}pt;")
         d83 = QLabel("Darkone83")
-        d83.setStyleSheet(f"color:{C_PURPLE};font-family:'{FONT_MONO}';font-size:8pt;font-weight:bold;")
+        d83.setStyleSheet(f"color:{C_PURPLE};font-family:'{FONT_MONO}';font-size:{sc(8)}pt;font-weight:bold;")
 
         hdr_h.addWidget(title); hdr_h.addStretch()
         hdr_h.addWidget(tr); hdr_h.addWidget(sep); hdr_h.addWidget(d83)
@@ -733,7 +1028,7 @@ class MainWindow(QMainWindow):
 
         # Body
         body = QWidget(); body.setStyleSheet(f"background:{C_BG};")
-        body_h = QHBoxLayout(body); body_h.setContentsMargins(12,8,12,8); body_h.setSpacing(12)
+        body_h = QHBoxLayout(body); body_h.setContentsMargins(sc(12),sc(8),sc(12),sc(8)); body_h.setSpacing(sc(12))
         main_v.addWidget(body)
 
         # Preview
@@ -748,8 +1043,8 @@ class MainWindow(QMainWindow):
         body_h.addWidget(self.preview, 0)
 
         # Controls
-        ctrl = QWidget(); ctrl.setStyleSheet(f"background:{C_BG};"); ctrl.setFixedWidth(215)
-        ctrl_v = QVBoxLayout(ctrl); ctrl_v.setContentsMargins(4,0,0,0); ctrl_v.setSpacing(2)
+        ctrl = QWidget(); ctrl.setStyleSheet(f"background:{C_BG};"); ctrl.setFixedWidth(sc(215))
+        ctrl_v = QVBoxLayout(ctrl); ctrl_v.setContentsMargins(sc(4),0,0,0); ctrl_v.setSpacing(sc(2))
         body_h.addWidget(ctrl, 0)
 
         # Frame
@@ -757,40 +1052,41 @@ class MainWindow(QMainWindow):
         self.frame_combo = QComboBox()
         self.frame_combo.addItems(list(FRAMES.keys()))
         self.frame_combo.setStyleSheet(f"""
-            QComboBox{{background:{C_BTN};color:#ccc;font-family:'{FONT_MONO}';font-size:9pt;border:none;padding:5px 8px;}}
+            QComboBox{{background:{C_BTN};color:#ccc;font-family:'{FONT_MONO}';font-size:{sc(9)}pt;border:none;padding:{sc(5)}px {sc(8)}px;}}
             QComboBox:hover{{background:{C_BTN_HOV};}}
-            QComboBox QAbstractItemView{{background:#1c1c1c;color:#ccc;selection-background-color:{C_GREEN};selection-color:#000;font-family:'{FONT_MONO}';font-size:9pt;}}
+            QComboBox QAbstractItemView{{background:#1c1c1c;color:#ccc;selection-background-color:{C_GREEN};selection-color:#000;font-family:'{FONT_MONO}';font-size:{sc(9)}pt;}}
         """)
         self.frame_combo.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.frame_combo.currentTextChanged.connect(self._on_frame_change)
         ctrl_v.addWidget(self.frame_combo)
 
         # Artwork
-        ctrl_v.addSpacing(6); ctrl_v.addWidget(section_label("ARTWORK"))
+        ctrl_v.addSpacing(sc(6)); ctrl_v.addWidget(section_label("ARTWORK"))
         self.art_lbl = make_label("No image loaded"); self.art_lbl.setWordWrap(True)
         ctrl_v.addWidget(self.art_lbl)
         bb = make_button("Browse..."); bb.clicked.connect(self._browse); ctrl_v.addWidget(bb)
 
         # Zoom
-        ctrl_v.addSpacing(6); ctrl_v.addWidget(section_label("ZOOM"))
+        ctrl_v.addSpacing(sc(6)); ctrl_v.addWidget(section_label("ZOOM"))
         zr = QWidget(); zr.setStyleSheet("background:transparent;")
-        zh = QHBoxLayout(zr); zh.setContentsMargins(0,0,0,0); zh.setSpacing(4)
+        zh = QHBoxLayout(zr); zh.setContentsMargins(0,0,0,0); zh.setSpacing(sc(4))
         self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
         self.zoom_slider.setRange(10,400); self.zoom_slider.setValue(100)
-        self.zoom_slider.setStyleSheet(f"QSlider::groove:horizontal{{background:#1a1a1a;height:4px;border-radius:2px;}} QSlider::handle:horizontal{{background:{C_GREEN};width:14px;height:14px;margin:-5px 0;border-radius:7px;}} QSlider::sub-page:horizontal{{background:{C_GREEN};border-radius:2px;}}")
+        sh = sc(14)
+        self.zoom_slider.setStyleSheet(f"QSlider::groove:horizontal{{background:#1a1a1a;height:{sc(4)}px;border-radius:2px;}} QSlider::handle:horizontal{{background:{C_GREEN};width:{sh}px;height:{sh}px;margin:{-sh//2+1}px 0;border-radius:{sh//2}px;}} QSlider::sub-page:horizontal{{background:{C_GREEN};border-radius:2px;}}")
         self.zoom_slider.valueChanged.connect(self._on_slider_changed)
-        self.zoom_lbl = make_label("100%", C_GREEN, bold=True); self.zoom_lbl.setFixedWidth(42)
+        self.zoom_lbl = make_label("100%", C_GREEN, bold=True); self.zoom_lbl.setFixedWidth(sc(42))
         zh.addWidget(self.zoom_slider); zh.addWidget(self.zoom_lbl); ctrl_v.addWidget(zr)
         zbr = QWidget(); zbr.setStyleSheet("background:transparent;")
-        zbh = QHBoxLayout(zbr); zbh.setContentsMargins(0,0,0,0); zbh.setSpacing(4)
+        zbh = QHBoxLayout(zbr); zbh.setContentsMargins(0,0,0,0); zbh.setSpacing(sc(4))
         for t,fn in [("−",lambda:self._zoom_by(-5)),("+",lambda:self._zoom_by(+5)),("Reset Fit",self._reset_fit)]:
             b=make_button(t,fg="#aaa",color="#1a1a1a",hover="#252525"); b.clicked.connect(fn); zbh.addWidget(b)
         ctrl_v.addWidget(zbr)
 
         # Position
-        ctrl_v.addSpacing(6); ctrl_v.addWidget(section_label("POSITION  (drag to pan)"))
+        ctrl_v.addSpacing(sc(6)); ctrl_v.addWidget(section_label("POSITION  (drag to pan)"))
         ng = QWidget(); ng.setStyleSheet("background:transparent;")
-        ng_g = QGridLayout(ng); ng_g.setSpacing(2); ng_g.setContentsMargins(0,0,0,0)
+        ng_g = QGridLayout(ng); ng_g.setSpacing(sc(2)); ng_g.setContentsMargins(0,0,0,0)
         bc = dict(color="#1a1a1a",fg="#aaa",hover="#252525")
         bu=make_button("▲",**bc); bu.clicked.connect(lambda:self._nudge(0,-10))
         bl=make_button("◀",**bc); bl.clicked.connect(lambda:self._nudge(-10,0))
@@ -802,10 +1098,10 @@ class MainWindow(QMainWindow):
         ctrl_v.addWidget(ng)
 
         # TEXT OVERLAYS
-        ctrl_v.addSpacing(6); ctrl_v.addWidget(section_label("TEXT OVERLAYS"))
+        ctrl_v.addSpacing(sc(6)); ctrl_v.addWidget(section_label("TEXT OVERLAYS"))
 
         mode_row = QWidget(); mode_row.setStyleSheet("background:transparent;")
-        mode_h = QHBoxLayout(mode_row); mode_h.setContentsMargins(0,0,0,0); mode_h.setSpacing(4)
+        mode_h = QHBoxLayout(mode_row); mode_h.setContentsMargins(0,0,0,0); mode_h.setSpacing(sc(4))
         self.pan_mode_btn  = make_button("🖼 Art Pan",   color=C_GREEN,   fg="#000", hover="#4a9a00")
         self.text_mode_btn = make_button("✏ Text Move", color="#1a1a1a", fg="#aaa", hover="#252525")
         self.pan_mode_btn.clicked.connect(lambda: self._set_mode("pan"))
@@ -820,27 +1116,27 @@ class MainWindow(QMainWindow):
         # Text list
         self.text_list_w = QWidget(); self.text_list_w.setStyleSheet("background:transparent;")
         self.text_list_v = QVBoxLayout(self.text_list_w)
-        self.text_list_v.setContentsMargins(0,2,0,2); self.text_list_v.setSpacing(2)
+        self.text_list_v.setContentsMargins(0,sc(2),0,sc(2)); self.text_list_v.setSpacing(sc(2))
         scroll = QScrollArea(); scroll.setWidget(self.text_list_w); scroll.setWidgetResizable(True)
-        scroll.setMaximumHeight(150)
-        scroll.setStyleSheet("QScrollArea{background:#111;border:1px solid #222;} QScrollBar:vertical{background:#1a1a1a;width:8px;} QScrollBar::handle:vertical{background:#333;border-radius:4px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}")
+        scroll.setMaximumHeight(sc(150))
+        scroll.setStyleSheet(f"QScrollArea{{background:#111;border:1px solid #222;}} QScrollBar:vertical{{background:#1a1a1a;width:{sc(8)}px;}} QScrollBar::handle:vertical{{background:#333;border-radius:{sc(4)}px;}} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{height:0;}}")
         ctrl_v.addWidget(scroll)
 
         # Frame info
-        ctrl_v.addSpacing(4); ctrl_v.addWidget(section_label("FRAME INFO"))
+        ctrl_v.addSpacing(sc(4)); ctrl_v.addWidget(section_label("FRAME INFO"))
         self.info_lbl = make_label(""); self.info_lbl.setWordWrap(True)
         ctrl_v.addWidget(self.info_lbl)
 
         ctrl_v.addStretch()
         line = QFrame(); line.setFrameShape(QFrame.Shape.HLine); line.setStyleSheet("color:#1e1e1e;"); ctrl_v.addWidget(line)
-        ctrl_v.addSpacing(4)
+        ctrl_v.addSpacing(sc(4))
 
         bs = make_button("Save Cover", color=C_GREEN, fg="#000", hover="#4a9a00"); bs.clicked.connect(self._save); ctrl_v.addWidget(bs)
-        ctrl_v.addSpacing(4)
+        ctrl_v.addSpacing(sc(4))
         bc2 = make_button("Clear", color="#1a1a1a", fg="#555", hover="#252525"); bc2.clicked.connect(self._clear); ctrl_v.addWidget(bc2)
 
         self.status_lbl = QLabel("Ready — drop an image onto the preview")
-        self.status_lbl.setStyleSheet(f"background:{C_HDR};color:#333;font-family:'{FONT_MONO}';font-size:8pt;padding:4px 12px;")
+        self.status_lbl.setStyleSheet(f"background:{C_HDR};color:#333;font-family:'{FONT_MONO}';font-size:{sc(8)}pt;padding:{sc(4)}px {sc(12)}px;")
         main_v.addWidget(self.status_lbl)
 
     # ── Mode ──────────────────────────────────────────────────────────────────
@@ -851,8 +1147,8 @@ class MainWindow(QMainWindow):
     def _set_mode(self, mode):
         self._mode = mode
         self.preview.set_mode(mode)
-        active_ss   = f"QPushButton{{background:{C_GREEN};color:#000;font-family:'{FONT_MONO}';font-size:9pt;font-weight:bold;border:none;padding:7px 10px;}} QPushButton:hover{{background:#4a9a00;color:#000;}}"
-        inactive_ss = f"QPushButton{{background:#1a1a1a;color:#aaa;font-family:'{FONT_MONO}';font-size:9pt;font-weight:bold;border:none;padding:7px 10px;}} QPushButton:hover{{background:#252525;color:#fff;}}"
+        active_ss   = f"QPushButton{{background:{C_GREEN};color:#000;font-family:'{FONT_MONO}';font-size:{sc(9)}pt;font-weight:bold;border:none;padding:{sc(7)}px {sc(10)}px;}} QPushButton:hover{{background:#4a9a00;color:#000;}}"
+        inactive_ss = f"QPushButton{{background:#1a1a1a;color:#aaa;font-family:'{FONT_MONO}';font-size:{sc(9)}pt;font-weight:bold;border:none;padding:{sc(7)}px {sc(10)}px;}} QPushButton:hover{{background:#252525;color:#fff;}}"
         if mode == "pan":
             self.pan_mode_btn.setStyleSheet(active_ss)
             self.text_mode_btn.setStyleSheet(inactive_ss)
@@ -906,25 +1202,25 @@ class MainWindow(QMainWindow):
 
         for tb in self.text_boxes:
             row = QWidget(); row.setStyleSheet("background:#161616;border-radius:2px;")
-            rh  = QHBoxLayout(row); rh.setContentsMargins(4,3,4,3); rh.setSpacing(4)
+            rh  = QHBoxLayout(row); rh.setContentsMargins(sc(4),sc(3),sc(4),sc(3)); rh.setSpacing(sc(4))
 
-            swatch = QLabel("  "); swatch.setFixedSize(14,14)
+            swatch = QLabel("  "); swatch.setFixedSize(sc(14), sc(14))
             swatch.setStyleSheet(f"background:{tb.color_hex()};border:1px solid #444;")
             rh.addWidget(swatch)
 
             lbl = QLabel(tb.label())
-            lbl.setStyleSheet(f"color:#aaa;font-family:'{FONT_MONO}';font-size:8pt;"); lbl.setMinimumWidth(80)
+            lbl.setStyleSheet(f"color:#aaa;font-family:'{FONT_MONO}';font-size:{sc(8)}pt;"); lbl.setMinimumWidth(sc(80))
             rh.addWidget(lbl, 1)
 
             tid = tb.id
-            be = QPushButton("✏"); be.setFixedSize(22,22)
-            be.setStyleSheet(f"background:#1c1c1c;color:{C_GREEN};border:none;font-size:10pt;")
+            be = QPushButton("✏"); be.setFixedSize(sc(22), sc(22))
+            be.setStyleSheet(f"background:#1c1c1c;color:{C_GREEN};border:none;font-size:{sc(10)}pt;")
             be.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             be.clicked.connect(lambda c, i=tid: self._edit_text_box(i))
             rh.addWidget(be)
 
-            bd = QPushButton("✕"); bd.setFixedSize(22,22)
-            bd.setStyleSheet("background:#1c1c1c;color:#c03030;border:none;font-size:10pt;")
+            bd = QPushButton("✕"); bd.setFixedSize(sc(22), sc(22))
+            bd.setStyleSheet(f"background:#1c1c1c;color:#c03030;border:none;font-size:{sc(10)}pt;")
             bd.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             bd.clicked.connect(lambda c, i=tid: self._delete_text_box(i))
             rh.addWidget(bd)
@@ -952,8 +1248,9 @@ class MainWindow(QMainWindow):
         self.preview.setFixedSize(dw, DISP_H)
         self.preview.set_disp_scale(self._disp_scale)
         # Lock window to exact content size — no resize in either axis
-        total_w = dw + 215 + 12*3
-        self.setFixedSize(total_w, DISP_H + 40 + 24)  # preview + header + status
+        total_w  = dw + sc(215) + sc(12)*3
+        menu_h   = self.menuBar().sizeHint().height() if self.menuBar() else 0
+        self.setFixedSize(total_w, DISP_H + sc(40) + sc(24) + menu_h)  # preview + header + status + menu
         self._update_info()
         if self.art_img: self._reset_fit()
         else: self._redraw()
@@ -979,7 +1276,7 @@ class MainWindow(QMainWindow):
         self.art_img = img; self.art_path = path
         name = Path(path).name
         self.art_lbl.setText(f"{name}\n{img.width} x {img.height} px")
-        self.art_lbl.setStyleSheet(f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:8pt;")
+        self.art_lbl.setStyleSheet(f"color:{C_GREEN};font-family:'{FONT_MONO}';font-size:{sc(8)}pt;")
         self._set_status(f"Loaded: {name}"); self._reset_fit()
 
     def _browse(self):
@@ -1095,8 +1392,66 @@ class MainWindow(QMainWindow):
         self.zoom = 1.0; self.off_x = self.off_y = 0.0
         self.text_boxes.clear(); self._rebuild_text_list()
         self.art_lbl.setText("No image loaded")
-        self.art_lbl.setStyleSheet(f"color:{C_DIM};font-family:'{FONT_MONO}';font-size:8pt;")
+        self.art_lbl.setStyleSheet(f"color:{C_DIM};font-family:'{FONT_MONO}';font-size:{sc(8)}pt;")
         self._sync_zoom_ui(); self._set_status("Cleared"); self._redraw()
+
+    def _create_theme(self):
+        dlg = CreateThemeDialog(self)
+        dlg.exec()
+
+    def _load_theme(self):
+        p, _ = QFileDialog.getOpenFileName(self, "Load Theme JSON", "",
+            "Theme JSON (*.json);;All files (*.*)")
+        if not p: return
+        try:
+            with open(p) as f:
+                t = json.load(f)
+        except Exception as ex:
+            QMessageBox.critical(self, "Load error", str(ex)); return
+
+        # Validate required keys
+        for key in ("name", "file", "art_box", "frame_wh"):
+            if key not in t:
+                QMessageBox.critical(self, "Invalid theme",
+                    f"Theme JSON is missing required key: '{key}'"); return
+
+        name     = t["name"]
+        img_path = Path(p).parent / t["file"]
+        if not img_path.exists():
+            QMessageBox.critical(self, "Missing image",
+                f"Frame image not found:\n{img_path}"); return
+
+        ab = tuple(t["art_box"])
+        # inner_slot falls back to art_box if omitted
+        sl = tuple(t.get("inner_slot", t["art_box"]))
+        wh = tuple(t["frame_wh"])
+
+        profile = {
+            "file":       str(img_path),
+            "art_box":    ab,
+            "inner_slot": sl,
+            "frame_wh":   wh,
+            "sep_y":      t.get("sep_y", None),
+        }
+        if t.get("behind", False):
+            profile["behind"] = True
+
+        # If name already exists, overwrite silently (user reloading updated theme)
+        FRAMES[name] = profile
+
+        # Refresh combo — block signals to avoid triggering _on_frame_change mid-update
+        self.frame_combo.blockSignals(True)
+        if self.frame_combo.findText(name) == -1:
+            self.frame_combo.addItem(name)
+        self.frame_combo.blockSignals(False)
+
+        # Evict cached frame image so it reloads fresh
+        self._frame_cache.pop(name, None)
+
+        # Switch to the loaded theme
+        self.frame_combo.setCurrentText(name)
+        self._on_frame_change(name)
+        self._set_status(f"Theme loaded: {name}")
 
     def _set_status(self, msg): self.status_lbl.setText(msg)
 
@@ -1105,6 +1460,13 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+
+    # On macOS, bump logical size by 1.5x so the UI reads comfortably on Retina.
+    if platform.system() == "Darwin":
+        global DISP_H, UI_SCALE
+        UI_SCALE = 1.5
+        DISP_H   = int(DISP_H * UI_SCALE)
+
     win = MainWindow()
     win.show()
     sys.exit(app.exec())
